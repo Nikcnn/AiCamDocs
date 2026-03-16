@@ -1,0 +1,2302 @@
+openapi: 3.0.3
+info:
+  title: Intelligent Campus API
+  description: |
+    API для системы диалогового оценивания знаний и управления пространствами кампуса.
+    Три независимых контура авторизации: Admin, WEB AI Tutor, Telegram.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local on-premise deployment
+
+tags:
+  - name: Auth
+    description: Авторизация (все контуры)
+  - name: Admin
+    description: Административная панель
+  - name: Whitelist
+    description: Управление whitelist
+  - name: Licenses
+    description: Лицензии и активация
+  - name: Schedule
+    description: Загрузка расписания
+  - name: Users
+    description: Управление пользователями
+  - name: Groups
+    description: Управление группами
+  - name: Spaces
+    description: Пространства кампуса
+  - name: Bookings
+    description: Бронирования
+  - name: Tutor
+    description: AI Tutor — сессии и оценивание
+  - name: CV
+    description: Компьютерное зрение — камеры и зоны
+
+paths:
+
+  # ─────────────────────────────────────────────
+  # AUTH — ADMIN PANEL
+  # ─────────────────────────────────────────────
+  /auth/admin/login:
+    post:
+      tags: [Auth]
+      summary: Вход в административную панель
+      description: |
+        Проверяет: существование пользователя → is_admin → пароль → first_login_flag.
+        Если first_login_flag=true — возвращает force_password_change=true, сессия НЕ создаётся.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: admin@university.kz
+                password:
+                  type: string
+                  example: secret123
+      responses:
+        "200":
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    example: eyJhbGci...
+                  token_type:
+                    type: string
+                    example: bearer
+                  force_password_change:
+                    type: boolean
+                    example: false
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Пользователь не является администратором
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: NOT_ADMIN
+                message: Access denied
+
+  /auth/admin/change-password:
+    post:
+      tags: [Auth]
+      summary: Смена дефолтного пароля (обязательно при первом входе)
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password, confirm_password]
+              properties:
+                new_password:
+                  type: string
+                  minLength: 8
+                  example: NewStr0ngPass!
+                confirm_password:
+                  type: string
+                  example: NewStr0ngPass!
+      responses:
+        "200":
+          description: Пароль успешно изменён
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          description: Пароли не совпадают
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: PASSWORDS_MISMATCH
+                message: Passwords do not match
+
+  # ─────────────────────────────────────────────
+  # AUTH — WEB AI TUTOR
+  # ─────────────────────────────────────────────
+  /auth/tutor/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация через invite-ссылку
+      description: |
+        Пользователь переходит по invite-URL. Frontend отправляет токен + данные.
+        Backend проверяет: токен существует → не истёк → email из whitelist → email свободен.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invite_token, email, password, confirm_password]
+              properties:
+                invite_token:
+                  type: string
+                  example: a1b2c3d4e5f6
+                email:
+                  type: string
+                  format: email
+                  example: student@university.kz
+                password:
+                  type: string
+                  minLength: 8
+                  example: MyPass123!
+                confirm_password:
+                  type: string
+                  example: MyPass123!
+      responses:
+        "201":
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: integer
+                    example: 42
+                  email:
+                    type: string
+                    example: student@university.kz
+                  role:
+                    type: string
+                    enum: [student, teacher]
+                    example: student
+        "400":
+          description: Невалидный/просроченный токен или email уже занят
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                expired:
+                  value:
+                    code: INVITE_EXPIRED
+                    message: Invite token has expired
+                email_taken:
+                  value:
+                    code: EMAIL_TAKEN
+                    message: Email already registered
+                not_in_whitelist:
+                  value:
+                    code: NOT_IN_WHITELIST
+                    message: Email not in whitelist
+
+  /auth/tutor/login:
+    post:
+      tags: [Auth]
+      summary: Вход в WEB AI Tutor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: student@university.kz
+                password:
+                  type: string
+                  example: MyPass123!
+      responses:
+        "200":
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    example: eyJhbGci...
+                  token_type:
+                    type: string
+                    example: bearer
+                  role:
+                    type: string
+                    enum: [student, teacher]
+                  user_id:
+                    type: integer
+                    example: 42
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ─────────────────────────────────────────────
+  # AUTH — TELEGRAM BOT
+  # ─────────────────────────────────────────────
+  /auth/telegram/activate:
+    post:
+      tags: [Auth]
+      summary: Первичная активация Telegram-бота
+      description: |
+        Вызывается ботом при /start. Проверяет: email в whitelist → роль → привязывает telegram_id к пользователю.
+        Если пользователь не зарегистрирован — создаёт запись с привязанным telegram_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_id, email]
+              properties:
+                telegram_id:
+                  type: integer
+                  format: int64
+                  example: 123456789
+                email:
+                  type: string
+                  format: email
+                  example: student@university.kz
+      responses:
+        "200":
+          description: Активация прошла успешно
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: integer
+                    example: 42
+                  role:
+                    type: string
+                    enum: [student, teacher, admin]
+                  is_whitelisted:
+                    type: boolean
+                    example: true
+        "404":
+          description: Email не найден в whitelist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: NOT_IN_WHITELIST
+                message: Email not found in whitelist
+
+  /auth/telegram/check:
+    get:
+      tags: [Auth]
+      summary: Проверка статуса и роли по telegram_id
+      description: Используется ботом при каждом запросе для определения доступных пространств.
+      parameters:
+        - name: telegram_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+          example: 123456789
+      responses:
+        "200":
+          description: Пользователь найден
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: integer
+                    example: 42
+                  role:
+                    type: string
+                    enum: [student, teacher, admin, guest]
+                  is_active:
+                    type: boolean
+                  is_whitelisted:
+                    type: boolean
+        "404":
+          description: Telegram ID не привязан ни к одному пользователю
+
+  # ─────────────────────────────────────────────
+  # WHITELIST
+  # ─────────────────────────────────────────────
+  /admin/whitelist:
+    get:
+      tags: [Whitelist]
+      summary: Получить список whitelist
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: role
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [student, teacher]
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Список записей whitelist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                    example: 150
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WhitelistEntry"
+    post:
+      tags: [Whitelist]
+      summary: Добавить email(ы) в whitelist
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entries]
+              properties:
+                entries:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [email, role]
+                    properties:
+                      email:
+                        type: string
+                        format: email
+                        example: student@university.kz
+                      role:
+                        type: string
+                        enum: [student, teacher]
+      responses:
+        "201":
+          description: Записи добавлены
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  added:
+                    type: integer
+                    example: 5
+                  duplicates:
+                    type: array
+                    items:
+                      type: string
+                    example: ["existing@university.kz"]
+
+  /admin/whitelist/{email}:
+    delete:
+      tags: [Whitelist]
+      summary: Удалить email из whitelist
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: email
+          in: path
+          required: true
+          schema:
+            type: string
+            format: email
+      responses:
+        "200":
+          $ref: "#/components/responses/OK"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ─────────────────────────────────────────────
+  # INVITES
+  # ─────────────────────────────────────────────
+  /admin/invites:
+    get:
+      tags: [Admin]
+      summary: Список активных invite-ссылок
+      security:
+        - AdminBearer: []
+      responses:
+        "200":
+          description: Список инвайтов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InviteEntry"
+    post:
+      tags: [Admin]
+      summary: Создать invite-ссылку
+      description: Генерирует токен с привязкой к email из whitelist.
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: newteacher@university.kz
+                expires_in_hours:
+                  type: integer
+                  default: 72
+                  example: 72
+      responses:
+        "201":
+          description: Invite создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InviteEntry"
+        "400":
+          description: Email не в whitelist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: NOT_IN_WHITELIST
+                message: Email must be added to whitelist first
+
+  /admin/invites/{token}:
+    delete:
+      tags: [Admin]
+      summary: Отозвать invite-ссылку
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/OK"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ─────────────────────────────────────────────
+  # LICENSES
+  # ─────────────────────────────────────────────
+  /admin/licenses:
+    get:
+      tags: [Licenses]
+      summary: Список лицензий и их статус
+      security:
+        - AdminBearer: []
+      responses:
+        "200":
+          description: Список лицензий
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/License"
+
+  /admin/licenses/activate:
+    post:
+      tags: [Licenses]
+      summary: Активировать лицензионный ключ
+      description: |
+        Проверяет ключ, Hardware ID машины, checksum. Активирует модуль (tutor или cv).
+        После активации соответствующий функционал разблокируется.
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license_key, hardware_id, product]
+              properties:
+                license_key:
+                  type: string
+                  example: TUTOR-XXXX-YYYY-ZZZZ
+                hardware_id:
+                  type: string
+                  example: a1b2c3d4e5f6a1b2c3d4e5f6
+                product:
+                  type: string
+                  enum: [ai_tutor, cv]
+                  example: ai_tutor
+      responses:
+        "200":
+          description: Лицензия активирована
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "400":
+          description: Невалидный ключ или Hardware ID не совпадает
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalid_key:
+                  value:
+                    code: INVALID_LICENSE_KEY
+                    message: License key is invalid or already used
+                hardware_mismatch:
+                  value:
+                    code: HARDWARE_MISMATCH
+                    message: Hardware ID does not match license binding
+
+  # ─────────────────────────────────────────────
+  # SCHEDULE
+  # ─────────────────────────────────────────────
+  /admin/schedule/upload:
+    post:
+      tags: [Schedule]
+      summary: Загрузить расписание из Excel-файла
+      description: |
+        Построчная обработка файла. Backend:
+        1. Проверяет существование преподавателя по email
+        2. Проверяет существование группы по code
+        3. Проверяет существование аудитории по name
+        4. Ищет накладки (коллизии по room+day+time)
+        5. Транзакционное сохранение — при любой ошибке откат всего файла
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Excel файл (.xlsx), макс 10MB
+      responses:
+        "200":
+          description: Расписание успешно загружено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported_rows:
+                    type: integer
+                    example: 120
+                  message:
+                    type: string
+                    example: Schedule imported successfully
+        "422":
+          description: Ошибки валидации — расписание НЕ сохранено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Validation failed, no data was saved
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        row:
+                          type: integer
+                          example: 14
+                        field:
+                          type: string
+                          example: room
+                        code:
+                          type: string
+                          enum:
+                            - TEACHER_NOT_FOUND
+                            - GROUP_NOT_FOUND
+                            - ROOM_NOT_FOUND
+                            - TIME_COLLISION
+                          example: ROOM_NOT_FOUND
+                        detail:
+                          type: string
+                          example: "Room '305' not found in database"
+
+  /admin/schedule:
+    get:
+      tags: [Schedule]
+      summary: Получить текущее расписание
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: group_id
+          in: query
+          schema:
+            type: integer
+        - name: teacher_id
+          in: query
+          schema:
+            type: integer
+        - name: room_id
+          in: query
+          schema:
+            type: integer
+        - name: day_of_week
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 7
+      responses:
+        "200":
+          description: Список записей расписания
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScheduleEntry"
+
+  /admin/schedule/{id}:
+    delete:
+      tags: [Schedule]
+      summary: Удалить запись расписания
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          $ref: "#/components/responses/OK"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ─────────────────────────────────────────────
+  # USERS
+  # ─────────────────────────────────────────────
+  /admin/users:
+    get:
+      tags: [Users]
+      summary: Список пользователей
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [student, teacher, admin]
+        - name: group_id
+          in: query
+          schema:
+            type: integer
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Поиск по email
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Список пользователей
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserShort"
+
+  /admin/users/{id}:
+    get:
+      tags: [Users]
+      summary: Получить пользователя по ID
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Данные пользователя
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserFull"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Users]
+      summary: Обновить пользователя (деактивация, смена роли)
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                is_active:
+                  type: boolean
+                role:
+                  type: string
+                  enum: [student, teacher]
+      responses:
+        "200":
+          description: Пользователь обновлён
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserFull"
+
+  # ─────────────────────────────────────────────
+  # GROUPS
+  # ─────────────────────────────────────────────
+  /admin/groups:
+    get:
+      tags: [Groups]
+      summary: Список групп
+      security:
+        - AdminBearer: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Group"
+    post:
+      tags: [Groups]
+      summary: Создать группу
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, code]
+              properties:
+                name:
+                  type: string
+                  example: ИС-22-1
+                code:
+                  type: string
+                  example: IS-22-1
+      responses:
+        "201":
+          description: Группа создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Group"
+
+  /admin/groups/{id}/members:
+    get:
+      tags: [Groups]
+      summary: Студенты группы
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserShort"
+    post:
+      tags: [Groups]
+      summary: Добавить студентов в группу
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_ids]
+              properties:
+                user_ids:
+                  type: array
+                  items:
+                    type: integer
+                  example: [42, 43, 44]
+      responses:
+        "200":
+          $ref: "#/components/responses/OK"
+
+  # ─────────────────────────────────────────────
+  # SPACES / ROOMS
+  # ─────────────────────────────────────────────
+  /spaces:
+    get:
+      tags: [Spaces]
+      summary: Список всех пространств с их статусом
+      description: |
+        Для Telegram-бота: если пользователь в whitelist — возвращает ВСЕ доступные ему пространства.
+        Если не в whitelist — только публичные (is_public=true).
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [meeting_room, workspace, parking, other]
+        - name: building
+          in: query
+          schema:
+            type: string
+        - name: available_only
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - name: telegram_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Для запросов из Telegram-бота (без Bearer токена)
+      responses:
+        "200":
+          description: Список пространств
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SpaceWithStatus"
+
+  /spaces/{id}:
+    get:
+      tags: [Spaces]
+      summary: Детальная информация о пространстве
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Данные пространства
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpaceDetailed"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/spaces:
+    post:
+      tags: [Spaces]
+      summary: Создать пространство
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpaceCreate"
+      responses:
+        "201":
+          description: Пространство создано
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpaceDetailed"
+
+  /admin/spaces/{id}:
+    put:
+      tags: [Spaces]
+      summary: Обновить пространство
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpaceCreate"
+      responses:
+        "200":
+          description: Пространство обновлено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpaceDetailed"
+    delete:
+      tags: [Spaces]
+      summary: Деактивировать пространство
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          $ref: "#/components/responses/OK"
+
+  # ─────────────────────────────────────────────
+  # BOOKINGS
+  # ─────────────────────────────────────────────
+  /bookings:
+    post:
+      tags: [Bookings]
+      summary: Создать бронирование
+      description: |
+        Проверяет:
+        1. Пользователь в whitelist и активен
+        2. Пространство существует и доступно
+        3. Нет активного кулдауна у пользователя для данного типа пространства
+        4. Пространство не занято (по расписанию или по бронированию)
+        Может использоваться как из Telegram (telegram_id), так и из WEB (Bearer).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [space_id]
+              properties:
+                space_id:
+                  type: integer
+                  example: 7
+                telegram_id:
+                  type: integer
+                  format: int64
+                  description: Для запросов из Telegram-бота
+                  example: 123456789
+                start_time:
+                  type: string
+                  format: date-time
+                  description: Если не указано — бронирование с текущего момента
+                end_time:
+                  type: string
+                  format: date-time
+      responses:
+        "201":
+          description: Бронирование создано
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "409":
+          description: Конфликт — пространство занято или есть кулдаун
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                space_occupied:
+                  value:
+                    code: SPACE_OCCUPIED
+                    message: Space is currently occupied
+                cooldown_active:
+                  value:
+                    code: COOLDOWN_ACTIVE
+                    message: You must wait before booking again
+                    detail:
+                      cooldown_expires_at: "2026-03-15T13:30:00Z"
+
+  /bookings/my:
+    get:
+      tags: [Bookings]
+      summary: Мои активные бронирования
+      parameters:
+        - name: telegram_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Для Telegram-бота
+      security:
+        - TutorBearer: []
+      responses:
+        "200":
+          description: Список активных броней
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+
+  /bookings/{id}/cancel:
+    post:
+      tags: [Bookings]
+      summary: Отменить бронирование
+      description: |
+        После отмены запускается кулдаун (30 минут).
+        Пользователь может отменить только свою бронь.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                telegram_id:
+                  type: integer
+                  format: int64
+                  description: Для Telegram-бота
+      responses:
+        "200":
+          description: Бронирование отменено, кулдаун запущен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Booking cancelled
+                  cooldown_expires_at:
+                    type: string
+                    format: date-time
+                    example: "2026-03-15T13:30:00Z"
+        "403":
+          description: Бронь принадлежит другому пользователю
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /bookings/space/{space_id}:
+    get:
+      tags: [Bookings]
+      summary: Текущее и предстоящее бронирование пространства
+      parameters:
+        - name: space_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+
+  # ─────────────────────────────────────────────
+  # COOLDOWNS
+  # ─────────────────────────────────────────────
+  /cooldowns/check:
+    get:
+      tags: [Bookings]
+      summary: Проверить активный кулдаун пользователя
+      parameters:
+        - name: telegram_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: space_type
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Статус кулдауна
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  has_cooldown:
+                    type: boolean
+                    example: true
+                  expires_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    example: "2026-03-15T13:30:00Z"
+                  remaining_seconds:
+                    type: integer
+                    nullable: true
+                    example: 1245
+
+  # ─────────────────────────────────────────────
+  # AI TUTOR — SESSIONS
+  # ─────────────────────────────────────────────
+  /tutor/sessions:
+    post:
+      tags: [Tutor]
+      summary: Создать новую сессию оценивания
+      description: |
+        Студент запускает сессию по теме/предмету.
+        AI-сервер генерирует первый вопрос и возвращает его.
+        Требует активной лицензии AI Tutor.
+      security:
+        - TutorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject, topic]
+              properties:
+                subject:
+                  type: string
+                  example: Сети и телекоммуникации
+                topic:
+                  type: string
+                  example: Модель OSI
+                group_id:
+                  type: integer
+                  nullable: true
+                  example: 3
+      responses:
+        "201":
+          description: Сессия создана, первый вопрос сгенерирован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionCreated"
+        "403":
+          description: Лицензия AI Tutor не активирована
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: LICENSE_INACTIVE
+                message: AI Tutor license is not activated
+
+    get:
+      tags: [Tutor]
+      summary: Список сессий текущего пользователя
+      security:
+        - TutorBearer: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, completed, abandoned]
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionShort"
+
+  /tutor/sessions/{session_id}:
+    get:
+      tags: [Tutor]
+      summary: Детали сессии
+      security:
+        - TutorBearer: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionDetailed"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /tutor/sessions/{session_id}/messages:
+    post:
+      tags: [Tutor]
+      summary: Отправить ответ студента
+      description: |
+        Студент отправляет ответ. AI-сервер:
+        1. Оценивает ответ по таксономии Блума (уровень 1–6)
+        2. Выбирает стратегию следующего вопроса:
+           - clarify: уточнить ответ
+           - feynman: объяснить простыми словами
+           - socratic: следующий вопрос по теме
+           - debate: стать оппонентом
+        3. Генерирует следующий вопрос или завершает сессию
+      security:
+        - TutorBearer: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  example: Транспортный уровень отвечает за сегментацию данных и надёжную доставку между процессами на хостах.
+      responses:
+        "200":
+          description: Ответ принят, следующий шаг сессии
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "409":
+          description: Сессия уже завершена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: SESSION_CLOSED
+                message: This session has already been completed
+
+    get:
+      tags: [Tutor]
+      summary: История диалога сессии
+      security:
+        - TutorBearer: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DialogMessage"
+
+  /tutor/sessions/{session_id}/result:
+    get:
+      tags: [Tutor]
+      summary: Результат завершённой сессии (карта Блума)
+      security:
+        - TutorBearer: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Результаты оценки по таксономии Блума
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BloomResult"
+        "400":
+          description: Сессия ещё не завершена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: SESSION_NOT_COMPLETED
+                message: Session is still active
+
+  # ─────────────────────────────────────────────
+  # AI TUTOR — TEACHER VIEWS
+  # ─────────────────────────────────────────────
+  /tutor/results/groups/{group_id}:
+    get:
+      tags: [Tutor]
+      summary: Карта понимания группы (для преподавателя)
+      description: Агрегированные Bloom-результаты всех студентов группы по теме/предмету.
+      security:
+        - TutorBearer: []
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: subject
+          in: query
+          schema:
+            type: string
+        - name: topic
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Карта понимания группы
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupBloomMap"
+
+  /tutor/results/students/{student_id}:
+    get:
+      tags: [Tutor]
+      summary: Результаты конкретного студента
+      security:
+        - TutorBearer: []
+      parameters:
+        - name: student_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BloomResult"
+
+  # ─────────────────────────────────────────────
+  # CV — CAMERAS
+  # ─────────────────────────────────────────────
+  /admin/cameras:
+    get:
+      tags: [CV]
+      summary: Список камер
+      security:
+        - AdminBearer: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Camera"
+    post:
+      tags: [CV]
+      summary: Добавить камеру
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CameraCreate"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Camera"
+
+  /admin/cameras/{id}:
+    put:
+      tags: [CV]
+      summary: Обновить камеру
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CameraCreate"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Camera"
+    delete:
+      tags: [CV]
+      summary: Удалить камеру
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          $ref: "#/components/responses/OK"
+
+  /admin/cameras/{id}/stream:
+    post:
+      tags: [CV]
+      summary: Запустить / остановить обработку RTSP-потока
+      security:
+        - AdminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [start, stop]
+      responses:
+        "200":
+          description: Поток запущен или остановлен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  camera_id:
+                    type: integer
+                  status:
+                    type: string
+                    enum: [streaming, idle, error]
+
+  # ─────────────────────────────────────────────
+  # CV — ZONES AND OCCUPANCY
+  # ─────────────────────────────────────────────
+  /cv/zones:
+    get:
+      tags: [CV]
+      summary: Список зон с текущим статусом занятости
+      parameters:
+        - name: camera_id
+          in: query
+          schema:
+            type: integer
+        - name: space_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ZoneStatus"
+
+  /cv/heatmap:
+    get:
+      tags: [CV]
+      summary: Тепловая карта загруженности за период
+      parameters:
+        - name: space_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [hour, day]
+            default: hour
+      responses:
+        "200":
+          description: Тепловая карта
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Heatmap"
+
+  /cv/occupancy/logs:
+    get:
+      tags: [CV]
+      summary: Лог занятости зоны
+      parameters:
+        - name: zone_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OccupancyLog"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────────────────────
+components:
+
+  securitySchemes:
+    AdminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT токен администратора
+    TutorBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT токен студента или преподавателя
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+
+  responses:
+    OK:
+      description: Успешно
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Success"
+    Unauthorized:
+      description: Не авторизован или токен истёк
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: UNAUTHORIZED
+            message: Invalid or expired token
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: NOT_FOUND
+            message: Resource not found
+
+  schemas:
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: Invalid input data
+        detail:
+          type: object
+          additionalProperties: true
+          nullable: true
+
+    Success:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Operation successful
+
+    WhitelistEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [student, teacher]
+
+    InviteEntry:
+      type: object
+      properties:
+        token:
+          type: string
+          example: a1b2c3d4e5f6
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [student, teacher]
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        is_used:
+          type: boolean
+
+    License:
+      type: object
+      properties:
+        id:
+          type: integer
+        product:
+          type: string
+          enum: [ai_tutor, cv]
+        license_key:
+          type: string
+          example: TUTOR-XXXX-YYYY-ZZZZ
+        hardware_id:
+          type: string
+        is_active:
+          type: boolean
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        activated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    UserShort:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [student, teacher, admin]
+        is_active:
+          type: boolean
+
+    UserFull:
+      allOf:
+        - $ref: "#/components/schemas/UserShort"
+        - type: object
+          properties:
+            telegram_id:
+              type: integer
+              format: int64
+              nullable: true
+            first_login_flag:
+              type: boolean
+            created_at:
+              type: string
+              format: date-time
+            groups:
+              type: array
+              items:
+                $ref: "#/components/schemas/Group"
+
+    Group:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          example: ИС-22-1
+        code:
+          type: string
+          example: IS-22-1
+        member_count:
+          type: integer
+          example: 25
+
+    ScheduleEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        teacher:
+          $ref: "#/components/schemas/UserShort"
+        group:
+          $ref: "#/components/schemas/Group"
+        room:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            building:
+              type: string
+        subject:
+          type: string
+          example: Сети и телекоммуникации
+        day_of_week:
+          type: integer
+          minimum: 1
+          maximum: 7
+          example: 2
+        time_start:
+          type: string
+          format: time
+          example: "09:00"
+        time_end:
+          type: string
+          format: time
+          example: "10:30"
+
+    SpaceWithStatus:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          example: Переговорная 3А
+        type:
+          type: string
+          enum: [meeting_room, workspace, parking, other]
+        building:
+          type: string
+          example: Корпус А
+        floor:
+          type: integer
+          example: 3
+        capacity:
+          type: integer
+          example: 8
+        is_active:
+          type: boolean
+        status:
+          type: string
+          enum: [free, occupied, booked, scheduled]
+          example: free
+        cv_enabled:
+          type: boolean
+          description: Подключена ли камера к этому пространству
+
+    SpaceDetailed:
+      allOf:
+        - $ref: "#/components/schemas/SpaceWithStatus"
+        - type: object
+          properties:
+            current_booking:
+              $ref: "#/components/schemas/Booking"
+              nullable: true
+            next_schedule:
+              $ref: "#/components/schemas/ScheduleEntry"
+              nullable: true
+            zones:
+              type: array
+              items:
+                $ref: "#/components/schemas/ZoneStatus"
+
+    SpaceCreate:
+      type: object
+      required: [name, type, building, floor]
+      properties:
+        name:
+          type: string
+          example: Переговорная 3А
+        type:
+          type: string
+          enum: [meeting_room, workspace, parking, other]
+        building:
+          type: string
+          example: Корпус А
+        floor:
+          type: integer
+        capacity:
+          type: integer
+        is_active:
+          type: boolean
+          default: true
+        is_public:
+          type: boolean
+          default: false
+          description: Доступно без whitelist
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: integer
+        space_id:
+          type: integer
+        space_name:
+          type: string
+          example: Переговорная 3А
+        user_id:
+          type: integer
+        status:
+          type: string
+          enum: [active, cancelled, completed, expired]
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    SessionCreated:
+      type: object
+      properties:
+        session_id:
+          type: integer
+          example: 101
+        subject:
+          type: string
+          example: Сети и телекоммуникации
+        topic:
+          type: string
+          example: Модель OSI
+        status:
+          type: string
+          enum: [active]
+        first_message:
+          type: object
+          properties:
+            id:
+              type: integer
+            role:
+              type: string
+              enum: [ai]
+            content:
+              type: string
+              example: Расскажите, что такое модель OSI и для чего она нужна?
+            strategy:
+              type: string
+              enum: [socratic, feynman, debate, clarify]
+              example: socratic
+            created_at:
+              type: string
+              format: date-time
+
+    SessionShort:
+      type: object
+      properties:
+        id:
+          type: integer
+        subject:
+          type: string
+        topic:
+          type: string
+        status:
+          type: string
+          enum: [active, completed, abandoned]
+        messages_count:
+          type: integer
+        bloom_level_reached:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 6
+        created_at:
+          type: string
+          format: date-time
+
+    SessionDetailed:
+      allOf:
+        - $ref: "#/components/schemas/SessionShort"
+        - type: object
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: "#/components/schemas/DialogMessage"
+            result:
+              $ref: "#/components/schemas/BloomResult"
+              nullable: true
+
+    DialogMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+        session_id:
+          type: integer
+        role:
+          type: string
+          enum: [student, ai]
+        content:
+          type: string
+        strategy:
+          type: string
+          enum: [socratic, feynman, debate, clarify]
+          nullable: true
+          description: Стратегия следующего вопроса (только для role=ai)
+        bloom_assessment:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 6
+          description: Оценённый уровень Блума ответа студента
+        created_at:
+          type: string
+          format: date-time
+
+    MessageResponse:
+      type: object
+      properties:
+        student_message_id:
+          type: integer
+        bloom_assessment:
+          type: integer
+          minimum: 1
+          maximum: 6
+          example: 3
+          description: "Уровень Блума ответа: 1=Знание, 2=Понимание, 3=Применение, 4=Анализ, 5=Синтез, 6=Оценка"
+        session_completed:
+          type: boolean
+          example: false
+        next_message:
+          type: object
+          nullable: true
+          description: Следующий вопрос AI (null если сессия завершена)
+          properties:
+            id:
+              type: integer
+            content:
+              type: string
+              example: Хорошо. Теперь объясните, почему именно 7 уровней, а не, например, 5?
+            strategy:
+              type: string
+              enum: [socratic, feynman, debate, clarify]
+              example: socratic
+
+    BloomResult:
+      type: object
+      properties:
+        session_id:
+          type: integer
+        student_id:
+          type: integer
+        subject:
+          type: string
+        topic:
+          type: string
+        final_bloom_level:
+          type: integer
+          minimum: 1
+          maximum: 6
+          example: 4
+          description: "Итоговый уровень: 1=Знание 2=Понимание 3=Применение 4=Анализ 5=Синтез 6=Оценка"
+        bloom_label:
+          type: string
+          example: Анализ
+        messages_count:
+          type: integer
+          example: 12
+        strategies_used:
+          type: array
+          items:
+            type: string
+          example: [socratic, feynman]
+        completed_at:
+          type: string
+          format: date-time
+
+    GroupBloomMap:
+      type: object
+      properties:
+        group_id:
+          type: integer
+        group_name:
+          type: string
+        subject:
+          type: string
+        topic:
+          type: string
+        total_students:
+          type: integer
+        assessed_students:
+          type: integer
+        distribution:
+          type: object
+          description: Количество студентов на каждом уровне Блума
+          properties:
+            level_1:
+              type: integer
+              example: 2
+            level_2:
+              type: integer
+              example: 8
+            level_3:
+              type: integer
+              example: 10
+            level_4:
+              type: integer
+              example: 5
+            level_5:
+              type: integer
+              example: 2
+            level_6:
+              type: integer
+              example: 1
+        students:
+          type: array
+          items:
+            type: object
+            properties:
+              student_id:
+                type: integer
+              email:
+                type: string
+              final_bloom_level:
+                type: integer
+              bloom_label:
+                type: string
+              session_count:
+                type: integer
+
+    Camera:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          example: Камера 3A-1
+        rtsp_url:
+          type: string
+          example: "rtsp://192.168.1.100:554/stream1"
+        location:
+          type: string
+          example: Переговорная 3А, угол
+        space_id:
+          type: integer
+          nullable: true
+        is_active:
+          type: boolean
+        stream_status:
+          type: string
+          enum: [streaming, idle, error]
+        zones:
+          type: array
+          items:
+            $ref: "#/components/schemas/ZoneStatus"
+
+    CameraCreate:
+      type: object
+      required: [name, rtsp_url]
+      properties:
+        name:
+          type: string
+        rtsp_url:
+          type: string
+          example: "rtsp://192.168.1.100:554/stream1"
+        location:
+          type: string
+        space_id:
+          type: integer
+          nullable: true
+        is_active:
+          type: boolean
+          default: true
+
+    ZoneStatus:
+      type: object
+      properties:
+        id:
+          type: integer
+        camera_id:
+          type: integer
+        name:
+          type: string
+          example: Рабочее место 1
+        zone_type:
+          type: string
+          enum: [seat, meeting_area, entrance, parking_spot]
+        is_occupied:
+          type: boolean
+          example: false
+        last_updated:
+          type: string
+          format: date-time
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.94
+          description: Уверенность YOLO-модели
+
+    OccupancyLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        zone_id:
+          type: integer
+        is_occupied:
+          type: boolean
+        confidence:
+          type: number
+          format: float
+        detected_at:
+          type: string
+          format: date-time
+
+    Heatmap:
+      type: object
+      properties:
+        space_id:
+          type: integer
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        granularity:
+          type: string
+          enum: [hour, day]
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              occupancy_rate:
+                type: number
+                format: float
+                minimum: 0
+                maximum: 1
+                description: Доля занятых зон в момент времени
+                example: 0.75
